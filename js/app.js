@@ -81,7 +81,7 @@ addEventListener('resize', applyCols);
 /* ------------------------------------------------------------ components */
 function cardHtml(b) {
   const pr = bookProgress(b);
-  const badge = b.status === 'new' ? '<span class="badge">NEW</span>' : b.status === 'reading' ? '<span class="badge reading">READING</span>' : '';
+  const badge = b.status === 'new' ? '<span class="badge">UNREAD</span>' : b.status === 'reading' ? `<span class="badge reading">READING ${pr > 0 ? Math.round(pr * 100) + '%' : ''}</span>` : '<span class="badge read">FINISHED</span>';
   const typ = b.kind !== 'comic' ? `<span class="typ">${b.ext.toUpperCase()}</span>` : '';
   return `<div class="card ${settings.showTitles ? '' : 'notitle'}" data-id="${b.id}" title="${esc(b.title)}">
     <img loading="lazy" decoding="async" src="${coverUrl(b)}" alt="">${typ}<div class="shade"></div>${badge}${b.fav ? `<span class="fav" ${typ ? 'style="top:30px"' : ''}>${icon('star')}</span>` : ''}
@@ -110,6 +110,7 @@ function emptyState() {
 function shell(inner, extra = '') {
   root.innerHTML = `<div class="sheet">${inner}${extra}</div>`;
   applyCols();
+  setupLongPress(root);
 }
 const pillTools = (view = true) => `
   <button class="ib" data-act="filter" aria-label="Filter">${icon('filter')}</button>
@@ -422,13 +423,81 @@ async function route(keepScroll = false) {
 }
 addEventListener('hashchange', () => route());
 
+/* --------------------------------------------------------- long-press menu */
+let _lpTimer = null, _lpCard = null, _multiSel = new Set();
+
+function showCardMenu(id) {
+  const b = byId(id);
+  if (!b) return;
+  const { el, close } = modal(`
+    <div class="cmenu-cover">
+      <img src="${coverUrl(b)}" alt="">
+      <div class="cmenu-title">${esc(b.title)}</div>
+      <div class="cmenu-meta"><button class="ib" data-cm="fav" style="${b.fav ? 'color:#FFB300' : ''}">${icon(b.fav ? 'star' : 'star_o')}</button>
+        <button class="ib" data-cm="info">${icon('info')}</button>
+        <button class="ib" data-cm="delete" style="color:#C62828">${icon('del')}</button></div>
+    </div>
+    <div class="cmenu-list">
+      <div class="cmenu-item" data-cm="addcol">${icon('lib')}<span>Collections</span></div>
+      <div class="cmenu-item" data-cm="changecover">${icon('image')}<span>Change cover</span></div>
+      <div class="cmenu-item" data-cm="edit">${icon('edit')}<span>Edit metadata</span></div>
+      <div class="cmenu-item" data-cm="share">${icon('share')}<span>Share</span></div>
+      <div class="cmenu-item" data-cm="multisel">${icon('check')}<span>Multi selection</span></div>
+    </div>`);
+  el.querySelectorAll('[data-cm]').forEach(btn => btn.addEventListener('click', async () => {
+    close();
+    switch (btn.dataset.cm) {
+      case 'fav': b.fav = !b.fav; await saveBook(b); route(true); break;
+      case 'info': go('/book/' + id); break;
+      case 'delete':
+        if (await confirmDlg('Delete this book?', `"${b.title}" will be removed from this device.`, 'Delete', true)) {
+          await db.delBook(b.id); await reload(); toast('Deleted'); route(true);
+        } break;
+      case 'addcol': collectionDlg(b); break;
+      case 'changecover': {
+        const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
+        inp.onchange = async () => { const f = inp.files[0]; if (!f) return; b.coverBlob = f; coverUrls.delete(b.id); await saveBook(b); route(true); };
+        inp.click(); break;
+      }
+      case 'edit': editDlg(b); break;
+      case 'share': {
+        const f2 = await db.getFile(b.id); if (!f2) { toast('File not found'); return; }
+        const file = new File([f2], b.filename, { type: f2.type || 'application/octet-stream' });
+        if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: b.title }); return; } catch (err) { if (err.name === 'AbortError') return; } }
+        download(file, b.filename); break;
+      }
+      case 'multisel': toast('Tap books to select, then use the action bar'); break;
+    }
+  }));
+}
+
+function setupLongPress(container) {
+  container.addEventListener('pointerdown', e => {
+    const card = e.target.closest('.card, .list .row');
+    if (!card?.dataset.id) return;
+    _lpCard = card.dataset.id;
+    _lpTimer = setTimeout(() => {
+      _lpTimer = null; _lpCard = null;
+      showCardMenu(card.dataset.id);
+    }, 500);
+  });
+  container.addEventListener('pointermove', () => { clearTimeout(_lpTimer); _lpTimer = null; });
+  container.addEventListener('pointerup', () => { clearTimeout(_lpTimer); _lpTimer = null; });
+  container.addEventListener('pointercancel', () => { clearTimeout(_lpTimer); _lpTimer = null; });
+  // Prevent browser image context menu on covers
+  container.addEventListener('contextmenu', e => {
+    if (e.target.closest('.card, .list .row')) e.preventDefault();
+  });
+}
+
 /* --------------------------------------------------------------- events */
 root.addEventListener('click', async e => {
   const t = e.target;
   const read = t.closest('[data-read]');
   if (read) return go('/read/' + read.dataset.read);
+  // Tap a card → open the book directly (like Kuro)
   const card = t.closest('.card, .list .row');
-  if (card?.dataset.id) return go('/book/' + card.dataset.id);
+  if (card?.dataset.id) return go('/read/' + card.dataset.id);
   const role = t.closest('[data-role]');
   if (role) { authorRole = role.dataset.role; return route(true); }
   const th = t.closest('.th-sw');
@@ -469,7 +538,7 @@ root.addEventListener('click', async e => {
       if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: b.title }); return; } catch (e) { if (e.name === 'AbortError') return; } }
       download(file, b.filename);
     } return;
-    case 'delete': if (b && await confirmDlg('Delete this book?', `“${b.title}” will be removed from this device.`, 'Delete', true)) { await db.delBook(b.id); await reload(); toast('Deleted'); go('/library'); } return;
+    case 'delete': if (b && await confirmDlg('Delete this book?', `"${b.title}" will be removed from this device.`, 'Delete', true)) { await db.delBook(b.id); await reload(); toast('Deleted'); go('/library'); } return;
     case 'persist': { const ok = await navigator.storage?.persist?.(); toast(ok ? 'Storage protected' : 'Browser declined — try installing the app first'); return; }
     case 'wipe': if (await confirmDlg('Delete entire library?', 'This cannot be undone.', 'Delete everything', true)) { await db.clear(); books = []; toast('Library cleared'); route(true); } return;
   }
