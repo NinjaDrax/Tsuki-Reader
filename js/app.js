@@ -224,8 +224,7 @@ async function viewSettings() {
     <h4>Theme</h4><div class="themes">${THEMES.map(t => `<div class="th-sw ${settings.theme === t.id ? 'sel' : ''}" data-theme="${t.id}"><div class="pv" style="background:${t.bg}"><i style="background:${t.fg}"></i></div><p>${t.name}</p></div>`).join('')}</div>
     <h4>Library</h4><div style="padding:0 16px"><small style="color:var(--on2)">Columns</small>${seg('cols', [[0, 'Auto'], [2, '2'], [3, '3'], [4, '4'], [5, '5'], [6, '6']])}</div>
     ${sw('showTitles', 'Show titles on covers')}
-    <h4>Reader (comics &amp; PDF)</h4><div style="padding:0 16px"><small style="color:var(--on2)">Reading direction</small>${seg('readMode', [['auto', 'Auto'], ['ltr', 'Left→Right'], ['rtl', 'Manga RTL'], ['webtoon', 'Webtoon']])}
-      <small style="color:var(--on2)">Page scale</small>${seg('scale', [['fit', 'Fit screen'], ['width', 'Fit width'], ['height', 'Fit height'], ['orig', 'Original']])}
+    <h4>Reader (comics &amp; PDF)</h4><div style="padding:0 16px"><small style="color:var(--on2)">Reading direction</small>${seg('readMode', [['auto', 'Auto'], ['ltr', 'Left→Right'], ['rtl', 'Manga RTL'], ['webtoon', 'Webtoon']])}\n      <small style="color:var(--on2)">Page scale</small>${seg('scale', [['fit', 'Fit screen'], ['width', 'Fit width'], ['height', 'Fit height'], ['orig', 'Original']])}
       <small style="color:var(--on2)">Background</small>${seg('readerBg', [['auto', 'Theme'], ['white', 'White'], ['gray', 'Gray'], ['black', 'Black']])}</div>
     ${sw('double', 'Double-page spreads', 'Show two pages side by side in landscape')}
     ${sw('tapNav', 'Tap zones', 'Tap left / right edges to turn pages')}
@@ -236,9 +235,11 @@ async function viewSettings() {
     <h4>Storage</h4><div class="opt"><div class="l">Library storage<small>${est.usage ? fmtSize(est.usage) + ' used' + (est.quota ? ' of ' + fmtSize(est.quota) : '') : 'Unknown'}</small></div></div>
     <div class="opt" data-act="persist"><div class="l">Protect storage<small>Ask the browser not to clear your library automatically</small></div></div>
     <div class="opt" data-act="wipe"><div class="l" style="color:#C62828">Delete entire library<small>Removes all books and reading progress from this device</small></div></div>
+    <h4>Install</h4><div class="opt" data-act="install" id="installopt" style="display:none"><div class="l">Install app<small>Add Tsuki Reader to your home screen for offline use</small></div>${icon('add')}</div>
     <h4>About</h4><div class="opt"><div class="l">Tsuki Reader 1.0<small>Comics: CBZ · CBR · CB7 · CBT — Books: PDF · EPUB · DOCX · TXT · Markdown. Everything is free and stays on your device.</small></div></div>
   </div>`);
   const n = $('#night'); if (n) n.oninput = () => { settings.night = +n.value; $('#nv').textContent = n.value; };
+  const io = $('#installopt'); if (io && _installPrompt) io.style.display = '';
 }
 
 /* ---------------------------------------------------------- dialogs */
@@ -484,7 +485,6 @@ function setupLongPress(container) {
   container.addEventListener('pointermove', () => { clearTimeout(_lpTimer); _lpTimer = null; });
   container.addEventListener('pointerup', () => { clearTimeout(_lpTimer); _lpTimer = null; });
   container.addEventListener('pointercancel', () => { clearTimeout(_lpTimer); _lpTimer = null; });
-  // Prevent browser image context menu on covers
   container.addEventListener('contextmenu', e => {
     if (e.target.closest('.card, .list .row')) e.preventDefault();
   });
@@ -495,7 +495,6 @@ root.addEventListener('click', async e => {
   const t = e.target;
   const read = t.closest('[data-read]');
   if (read) return go('/read/' + read.dataset.read);
-  // Tap a card → open the book directly (like Kuro)
   const card = t.closest('.card, .list .row');
   if (card?.dataset.id) return go('/read/' + card.dataset.id);
   const role = t.closest('[data-role]');
@@ -539,17 +538,25 @@ root.addEventListener('click', async e => {
       download(file, b.filename);
     } return;
     case 'delete': if (b && await confirmDlg('Delete this book?', `"${b.title}" will be removed from this device.`, 'Delete', true)) { await db.delBook(b.id); await reload(); toast('Deleted'); go('/library'); } return;
+    case 'install': if (_installPrompt) { _installPrompt.prompt(); const r = await _installPrompt.userChoice; if (r.outcome === 'accepted') { _installPrompt = null; toast('App installed!'); } } else { toast('Already installed or not supported on this browser'); } return;
     case 'persist': { const ok = await navigator.storage?.persist?.(); toast(ok ? 'Storage protected' : 'Browser declined — try installing the app first'); return; }
     case 'wipe': if (await confirmDlg('Delete entire library?', 'This cannot be undone.', 'Delete everything', true)) { await db.clear(); books = []; toast('Library cleared'); route(true); } return;
   }
 });
 
 /* ---------------------------------------------------------------- start */
+let _installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _installPrompt = e;
+  const el = document.getElementById('installopt');
+  if (el) el.style.display = '';
+});
+
 (async function init() {
   applyTheme();
   onSetting(k => { if (k === 'theme') applyTheme(); });
   await reload();
-  // Auto-migrate: books flagged reading but missing numbers
   await route();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
